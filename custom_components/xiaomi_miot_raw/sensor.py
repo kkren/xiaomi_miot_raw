@@ -1,3 +1,5 @@
+""" 这个版本的 update 方法未继承父类，而是重写了整个方法，
+    以此排查是否是继承上出了问题 """
 import asyncio
 import logging
 from collections import defaultdict
@@ -85,6 +87,7 @@ class MiotSensor(GenericMiotDevice):
     def __init__(self, device, config, device_info):
         GenericMiotDevice.__init__(self, device, config, device_info)
         self._state = None
+        self._skip_update = False
         self._sensor_property = config.get(CONF_SENSOR_PROPERTY)
         
     @property
@@ -93,7 +96,44 @@ class MiotSensor(GenericMiotDevice):
         return self._state
     
     async def async_update(self):
-        await super().async_update()
+        # await super().async_update()
+        if self._update_instant is False and self._skip_update:
+            self._skip_update = False
+            return
+
+        try:
+            _props = [k for k in self._mapping]
+            response = await self.hass.async_add_job(
+                    self._device.get_properties_for_mapping
+                )
+            self._available = True
+
+            statedict={}
+            count4004 = 0
+            for r in response:
+                if r['code'] == 0:
+                    try:
+                        f = self._ctrl_params[r['did']]['value_ratio']
+                        statedict[r['did']] = round(r['value'] * f , 3)
+                    except KeyError:
+                        statedict[r['did']] = r['value']
+                else:
+                    _LOGGER.error("Failed getting property '%s', code: %s", r['did'], r['code'])
+                    statedict[r['did']] = None
+                    if r['code'] == -4004:
+                        count4004 += 1
+            if count4004 == len(response):
+                self._assumed_state = True
+                # _LOGGER.warn("设备不支持状态反馈")
+                        
+
+            self._state_attrs.update(statedict)
+
+
+        except DeviceException as ex:
+            self._available = False
+            _LOGGER.error("Got exception while fetching the state: %s", ex)
+
         state = self._state_attrs
         if self._sensor_property is not None:
             self._state = state.get(self._sensor_property)
